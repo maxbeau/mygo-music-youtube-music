@@ -1,6 +1,6 @@
 # YouTube Music for MyGo Music
 
-Plays YouTube Music in [MyGo Music](https://github.com/egoist/mygo-music). It isn't affiliated with or endorsed by YouTube or Google, uses YouTube's private API, and may stop working at any time.
+Plays YouTube Music in [MyGo Music](https://github.com/maxbeau/mygo-music/tree/codex/youtube-discovery). It isn't affiliated with or endorsed by YouTube or Google, uses YouTube's private API, and may stop working at any time.
 
 ## Install
 
@@ -14,11 +14,11 @@ yt-dlp needs a JavaScript runtime (Deno, Node or Bun) to solve YouTube's challen
 
 Install with the deeplink:
 
-[mygo-music://install-plugin?repo=egoist/mygo-music-youtube-music](mygo-music://install-plugin?repo=egoist/mygo-music-youtube-music)
+[mygo-music://install-plugin?repo=maxbeau/mygo-music-youtube-music](mygo-music://install-plugin?repo=maxbeau/mygo-music-youtube-music)
 
 Or paste the GitHub URL in Settings > Plugins:
 
-[https://github.com/egoist/mygo-music-youtube-music](https://github.com/egoist/mygo-music-youtube-music)
+[https://github.com/maxbeau/mygo-music-youtube-music](https://github.com/maxbeau/mygo-music-youtube-music)
 
 In Settings > Plugins, allow YouTube Music to start programs. To get your library, click **Sign In** and sign in to Google in the window that opens.
 
