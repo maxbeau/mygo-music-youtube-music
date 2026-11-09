@@ -2,6 +2,12 @@
 
 Plays YouTube Music in [MyGo Music](https://github.com/maxbeau/mygo-music). It isn't affiliated with or endorsed by YouTube or Google, uses YouTube's private API, and may stop working at any time.
 
+## Recommended MyGo version
+
+For the best compatibility, use [maxbeau's MyGo Music](https://github.com/maxbeau/mygo-music) **0.1.30 or later** with this plugin. This companion fork includes the host support for song-radio queue handling, the discovery homepage and sidebar, and lyrics tools such as source selection, translation, romanization, timing adjustment, editing and offline storage. Other MyGo builds need equivalent host support to provide these features.
+
+推荐搭配 [maxbeau 维护的 MyGo Music](https://github.com/maxbeau/mygo-music) **0.1.30 及以上版本**，以完整使用上述电台、发现页面和歌词扩展功能。
+
 ## Install
 
 Install [ffmpeg](https://ffmpeg.org), and [yt-dlp](https://github.com/yt-dlp/yt-dlp) as a fallback. On macOS:
@@ -22,7 +28,7 @@ Or paste the GitHub URL in Settings > Plugins:
 
 In Settings > Plugins, allow YouTube Music to start programs. To get your library, click **Sign In** and sign in to Google in the window that opens.
 
-This version needs MyGo Music 0.1.28 or later, and only starts ffmpeg and yt-dlp: from the PATH, `/opt/homebrew/bin` or `/usr/local/bin`. If they're somewhere else, link them into one of those.
+This version needs MyGo Music 0.1.30 or later, and only starts ffmpeg and yt-dlp: from the PATH, `/opt/homebrew/bin` or `/usr/local/bin`. If they're somewhere else, link them into one of those.
 
 ## Signing in
 
