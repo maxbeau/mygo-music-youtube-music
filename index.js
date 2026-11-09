@@ -871,7 +871,8 @@ async function lyricJSON(url) {
   }, 3000);
 }
 
-export async function lyrics({ id, track }) {
+export async function lyrics({ id, track, refresh = false }) {
+  if (refresh) lyricCache.delete(id);
   if (lyricCache.has(id)) return lyricCache.get(id);
   const next = lyricDeadline(signal => call("next", { videoId: id, isAudioOnly: true }, remix, signal), 4000);
   // Attach a rejection handler immediately even when supplied metadata needs no next response.
@@ -884,9 +885,10 @@ export async function lyrics({ id, track }) {
   const other = metadata.then(async (song) => {
     if (!song?.name || !song.artists?.length) return null;
     let fallback = null;
-    for (const provider of [betterLyrics, lrcLibLyrics, kugouLyrics]) {
+    for (const [name, provider] of [["BetterLyrics", betterLyrics], ["LRCLIB", lrcLibLyrics], ["KuGou", kugouLyrics]]) {
       try {
         const result = await provider(song);
+        if (result) result.provider = name;
         if (hasTimedLyrics(result)) return result;
         if (hasLyrics(result) && !fallback) fallback = result;
       } catch (error) { errors.push(error); }
@@ -956,6 +958,10 @@ async function kugouLyrics(song) {
   const candidate = result?.candidates?.filter(c => matchesLyricTrack(song, c.song, c.singer, c.duration/1000, 8))
     .sort((a,b) => Math.abs(a.duration - song.duration) - Math.abs(b.duration - song.duration))[0];
   if (!candidate) return null;
+  return kugouDownload(candidate);
+}
+
+async function kugouDownload(candidate) {
   const params = new URLSearchParams({ fmt: "lrc", charset: "utf8", client: "pc", ver: "1", id: candidate.id, accesskey: candidate.accesskey });
   const data = await lyricJSON(`https://lyrics.kugou.com/download?${params}`);
   if (!data?.content) return null;
@@ -971,7 +977,41 @@ async function kugouLyrics(song) {
     if (bits >= 8) { bits -= 8; bytes.push((value >> bits) & 255); }
   }
   const lrc = new TextDecoder().decode(new Uint8Array(bytes));
-  return hasTimedLyrics({ lrc }) ? { lrc } : null;
+  return hasTimedLyrics({ lrc }) ? { lrc, provider: "KuGou" } : null;
+}
+
+// Search exposes real alternate recordings for explicit selection, without
+// weakening the automatic matcher or discarding a user's title correction.
+export async function searchLyrics({track, title, artist, provider = "All"}) {
+  const song = {...track, name: title || track.name, artists: artist ? [{name: artist}] : (track.artists || [])};
+  const tasks = [];
+  const candidate = (source, id, title, artist, duration, data) => ({provider:source, id, title, artist, duration, data});
+  if (provider === "All" || provider === "LRCLIB") tasks.push((async()=>{
+    const params = new URLSearchParams({track_name:lyricTitle(song.name), artist_name:song.artists[0]?.name || ""});
+    const records = await lyricJSON(`https://lrclib.net/api/search?${params}`);
+    return (Array.isArray(records)?records:[]).filter(r=>r.syncedLyrics || r.plainLyrics || r.instrumental).map(r=>candidate("LRCLIB", `lrc:${r.id}`, r.trackName, r.artistName, Math.round(r.duration*1000), {lrc:r.syncedLyrics || undefined,text:r.plainLyrics || undefined,instrumental:r.instrumental,provider:"LRCLIB"}));
+  })());
+  if (provider === "All" || provider === "KuGou") tasks.push((async()=>{
+    const params=new URLSearchParams({ver:"1",man:"yes",client:"pc",keyword:`${lyricTitle(song.name)} - ${song.artists[0]?.name || ""}`});
+    const result=await lyricJSON(`https://lyrics.kugou.com/search?${params}`);
+    return (result?.candidates || []).slice(0,20).map(r=>candidate("KuGou",`kugou:${encodeURIComponent(JSON.stringify({id:r.id,accesskey:r.accesskey}))}`,r.song,r.singer,r.duration));
+  })());
+  if (provider === "All" || provider === "BetterLyrics") tasks.push((async()=>{
+    const data=await betterLyrics(song);return hasLyrics(data)?[candidate("BetterLyrics",`better:${track.id}`,song.name,song.artists.map(a=>a.name).join(", "),song.duration,{...data,provider:"BetterLyrics"})]:[];
+  })());
+  if (provider === "All" || provider === "YouTube") tasks.push((async()=>{
+    const data=await lyricDeadline(async signal=>youtubeLyrics(await call("next",{videoId:track.id,isAudioOnly:true},remix,signal),signal),8000);
+    return hasLyrics(data)?[candidate("YouTube",`youtube:${track.id}`,track.name,(track.artists || []).map(a=>a.name).join(", "),track.duration,data)]:[];
+  })());
+  const results=await Promise.allSettled(tasks);
+  const candidates=results.flatMap(r=>r.status==="fulfilled"?r.value:[]);
+  if (!candidates.length && results.some(r=>r.status==="rejected")) throw new Error("Couldn't search lyrics providers");
+  return candidates.sort((a,b)=>Math.abs((a.duration || 0)-(track.duration || 0))-Math.abs((b.duration || 0)-(track.duration || 0)));
+}
+
+export async function lyricCandidate({id}) {
+  if (!id.startsWith("kugou:")) throw new Error("Search lyrics again");
+  return await kugouDownload(JSON.parse(decodeURIComponent(id.slice(6)))) || {lines:[]};
 }
 
 // Better Lyrics answers only for songs it has kept, and says so with a status:
@@ -1061,9 +1101,9 @@ async function youtubeLyrics(next, signal) {
         end: Number(l.cueRange?.endTimeMilliseconds) || 0,
         text: l.lyricLine,
       }));
-  if (lines.length) return { lines };
+  if (lines.length) return { lines, provider: "YouTube" };
   const text = findAll(r, "musicDescriptionShelfRenderer").map(s => textOf(s.description)).filter(Boolean).join("\n\n") || timed.map(l => l.lyricLine).filter(Boolean).join("\n");
-  return text.trim() ? { text: text.trim() } : { lines: [] };
+  return text.trim() ? { text: text.trim(), provider: "YouTube" } : { lines: [] };
 }
 
 // Playing.

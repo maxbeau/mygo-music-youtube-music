@@ -159,3 +159,44 @@ test('YouTube lines without cue ranges remain plain text',async()=>{
   assert.equal(result.text,'First\nSecond');
   assert.equal(result.lines,undefined);
 });
+
+// Explicit searches expose alternate recordings without weakening automatic matching.
+test('manual search filters providers and keeps preview text',async()=>{
+ const p=await plugin(u=>{
+  assert.equal(u.hostname,'lrclib.net');
+  assert.equal(u.searchParams.get('track_name'),'Corrected');
+  return [record({id:1,trackName:'Corrected (Live)',syncedLyrics:lrc})];
+ });
+ const rows=await p.api.searchLyrics({track:song,title:'Corrected',artist:'Singer',provider:'LRCLIB'});
+ assert.equal(rows.length,1);assert.equal(rows[0].provider,'LRCLIB');assert.equal(rows[0].data.lrc,lrc);
+ assert.equal(rows[0].title,'Corrected (Live)');assert.equal(p.requests.length,1);
+});
+
+// One provider failing does not discard a searchable alternative; KuGou downloads only after selection.
+test('search keeps partial results and downloads selected KuGou lyrics',async()=>{
+ let downloaded=0;
+ const p=await plugin(u=>{
+  if(u.hostname!=='lyrics.kugou.com')throw new Error('unavailable');
+  if(u.pathname==='/search')return {candidates:[{id:'pick',accesskey:'test-only',song:'Song',singer:'Singer',duration:180000}]};
+  downloaded++;assert.equal(u.searchParams.get('id'),'pick');assert.equal(u.searchParams.get('accesskey'),'test-only');
+  return {content:Buffer.from(lrc).toString('base64')};
+ });
+ const rows=await p.api.searchLyrics({track:song,provider:'All'});
+ assert.equal(rows.length,1);assert.equal(downloaded,0);
+ const data=await p.api.lyricCandidate({id:rows[0].id});
+ assert.equal(data.lrc,lrc);assert.equal(data.provider,'KuGou');assert.equal(downloaded,1);
+});
+
+// Refresh bypasses successful in-memory lyrics, while ordinary repeats use the cache.
+test('explicit refresh bypasses lyric cache',async()=>{
+ let text=lrc;
+ const p=await plugin(u=>{
+  if(u.hostname==='lrclib.net')return record({syncedLyrics:text});
+  if(u.hostname==='music.youtube.com')return {};
+  return {status:404};
+ });
+ assert.equal((await p.api.lyrics({id:'seed',track:song})).lrc,lrc);
+ text='[00:01.00]Changed';
+ assert.equal((await p.api.lyrics({id:'seed',track:song})).lrc,lrc);
+ assert.equal((await p.api.lyrics({id:'seed',track:song,refresh:true})).lrc,text);
+});

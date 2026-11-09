@@ -46,7 +46,16 @@ when YouTube's queue lookup fails. Timed lyrics take priority; plain text is
 retained when timing is unavailable. Matching checks title, artist and duration
 and keeps Live/Remix/Cover qualifiers. Each request has a timeout and provider
 rate limits are respected. Only successful results are cached, up to 64 songs
-in memory; failures can be retried.
+in memory; failures can be retried. MyGo 0.1.29 also persists the selected
+lyrics, translations, romanization and timing offset per source/song for offline
+reuse. An explicit refresh bypasses the plugin memory cache.
+
+The host Lyrics Options menu can search YouTube, BetterLyrics, LRCLIB and KuGou
+with an editable title/artist, preview candidates and apply a selection. Manual
+selection permits alternate recordings without relaxing automatic matching.
+KuGou previews download only after a candidate is selected. Translation, system
+romanization, import/export and display preferences live in the host app; API
+keys use the system credential store, never plugin storage.
 
 Lyrics lookups send song metadata to `api.betterlyrics.org`, `lrclib.net` and
 `lyrics.kugou.com`. YouTube session cookies are never sent to those providers.
@@ -68,7 +77,7 @@ New playlists are private. Removal follows MyGo's current contract: removing a s
 Run the fixture tests with Node 22 or later:
 
 ```bash
-node --experimental-vm-modules --test tests/discovery.test.mjs
+node --experimental-vm-modules --test tests/*.test.mjs
 ```
 
 Tests intercept network calls and never edit a real account. The companion MyGo checkout also has an opt-in test that executes this exact plugin in its real JavaScript engine:
