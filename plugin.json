@@ -1,8 +1,8 @@
 {
   "id": "youtube-music",
   "name": "YouTube Music",
-  "version": "0.2.0",
-  "minAppVersion": "0.1.23",
+  "version": "0.2.1",
+  "minAppVersion": "0.1.24",
   "main": "index.js",
   "playback": "stream",
   "permissions": {
@@ -27,17 +27,20 @@
     {
       "title": "Charts",
       "page": "charts",
-      "icon": "chart"
+      "icon": "chart",
+      "group": "explore"
     },
     {
       "title": "New Releases",
       "page": "new",
-      "icon": "star"
+      "icon": "star",
+      "group": "explore"
     },
     {
       "title": "Moods & Genres",
       "page": "moods",
-      "icon": "radio"
+      "icon": "radio",
+      "group": "explore"
     },
     {
       "builtin": "stations"
@@ -49,9 +52,10 @@
       "builtin": "savedAlbums"
     },
     {
-      "title": "Following",
+      "title": "Artists",
       "page": "artists",
-      "icon": "artist"
+      "icon": "artist",
+      "group": "library"
     }
   ]
 }

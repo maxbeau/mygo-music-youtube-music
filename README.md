@@ -22,7 +22,7 @@ Or paste the GitHub URL in Settings > Plugins:
 
 In Settings > Plugins, allow YouTube Music to start programs. To get your library, click **Sign In** and sign in to Google in the window that opens.
 
-This version needs MyGo Music 0.1.23 or later, and only starts ffmpeg and yt-dlp: from the PATH, `/opt/homebrew/bin` or `/usr/local/bin`. If they're somewhere else, link them into one of those.
+This version needs MyGo Music 0.1.24 or later, and only starts ffmpeg and yt-dlp: from the PATH, `/opt/homebrew/bin` or `/usr/local/bin`. If they're somewhere else, link them into one of those.
 
 ## Signing in
 
@@ -69,3 +69,11 @@ YOUTUBE_PLUGIN_DIR=/absolute/path/to/this/plugin go test ./internal/plugin -run 
 ```
 
 The request shapes were checked against the Metrolist/InnerTubeX implementations. Live checks cover anonymous discovery and radio; account writes still need acceptance with a signed-in test account.
+
+## Compact sidebar (MyGo 0.1.24)
+
+Charts, New Releases and Moods & Genres share the Explore page, declared with
+`group: "explore"` in navigation. Artists is a library entry. MyGo supplies a
+unified playlist library with Created/Saved filters, search and name sorting.
+Local sidebar pins can target playlists, albums and artists; dragging changes
+only their local order, and unpinning does not edit the cloud library.

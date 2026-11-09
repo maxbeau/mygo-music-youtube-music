@@ -28,5 +28,6 @@
   "Reload the playlist before editing it": "歌单已变化，请重新加载后再编辑",
   "The playlist is too large to edit safely": "歌单过大，无法完整读取后进行编辑",
   "Radio": "电台",
-  "Songs like the one you played last.": "根据你上一首播放的歌曲推荐。"
+  "Songs like the one you played last.": "根据你上一首播放的歌曲推荐。",
+  "Artists": "歌手"
 }
