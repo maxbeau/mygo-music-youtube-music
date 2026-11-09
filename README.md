@@ -22,7 +22,7 @@ Or paste the GitHub URL in Settings > Plugins:
 
 In Settings > Plugins, allow YouTube Music to start programs. To get your library, click **Sign In** and sign in to Google in the window that opens.
 
-This version needs MyGo Music 0.1.24 or later, and only starts ffmpeg and yt-dlp: from the PATH, `/opt/homebrew/bin` or `/usr/local/bin`. If they're somewhere else, link them into one of those.
+This version needs MyGo Music 0.1.25 or later, and only starts ffmpeg and yt-dlp: from the PATH, `/opt/homebrew/bin` or `/usr/local/bin`. If they're somewhere else, link them into one of those.
 
 ## Signing in
 
@@ -77,3 +77,11 @@ Charts, New Releases and Moods & Genres share the Explore page, declared with
 unified playlist library with Created/Saved filters, search and name sorting.
 Local sidebar pins can target playlists, albums and artists; dragging changes
 only their local order, and unpinning does not edit the cloud library.
+
+## Discovery homepage (MyGo 0.1.25, plugin 0.3.0)
+
+Home opts into the compact discovery layout: pinned shortcuts, quick song
+picks, Surprise Me radio, mixes and related recommendations from the current
+song. Each service shelf previews one row with See All for its full contents.
+Mixed cards retain YouTube's original order. Song cards carrying a radio
+playlist parameter stay playable songs rather than becoming station cards.

@@ -266,7 +266,7 @@ function cardOf(r) {
   const image = imageOf(r.thumbnailRenderer);
   const nav = r.navigationEndpoint;
   const watch = watchOf(nav);
-  if (watch?.playlistId) return { kind: "station", value: stationFor(watch, name, image) };
+  if (watch?.playlistId && (nav?.watchPlaylistEndpoint || !watch.videoId)) return { kind: "station", value: stationFor(watch, name, image) };
   if (nav?.watchEndpoint?.videoId) {
     const credits = creditsOf(runs);
     // On a card, words come first that say what it is.
@@ -358,6 +358,7 @@ async function sectionsOf(answer) {
     const token = nextToken(shelf);
     const section = {
       title,
+      entries: items.map(({ kind, value }) => ({ [kind]: value })),
       tracks: await withDurations(ofKind(items, "track")),
       albums: ofKind(items, "album"), artists: ofKind(items, "artist"),
       playlists: ofKind(items, "playlist"), stations: ofKind(items, "station"), links: ofKind(items, "link"),
@@ -473,7 +474,7 @@ function endSession() {
 
 export async function home() {
   const answer = await browseId("FEmusic_home");
-  return { title: t("Home"), sections: pageSectionsMore(answer, await sectionsOf(answer), t("Home")) };
+  return { title: t("Home"), layout: "discovery", sections: pageSectionsMore(answer, await sectionsOf(answer), t("Home")) };
 }
 
 export async function browse({ page }) {

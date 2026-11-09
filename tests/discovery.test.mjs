@@ -254,3 +254,16 @@ test('radio recognizes the live radio continuation variant', async () => {
   assert.equal(next[0].id,'second-page');
   assert.equal(p.requests[1].body.continuation,'radio-page-2');
 });
+
+// A song card can carry its radio playlist ID; it remains a song, not a Mix.
+test('home retains mixed order and identifies song cards with radio endpoints', async()=>{
+ const artist={musicTwoRowItemRenderer:{title:{simpleText:'Singer'},navigationEndpoint:{browseEndpoint:{browseId:'artist',browseEndpointContextSupportedConfigs:{browseEndpointContextMusicConfig:{pageType:'MUSIC_PAGE_TYPE_ARTIST'}}}}}};
+ const track={musicTwoRowItemRenderer:{title:{simpleText:'Song'},subtitle:{runs:[{text:'Artist'},{text:'•'},{text:'3:00'}]},navigationEndpoint:{watchEndpoint:{videoId:'song',playlistId:'RDAMVMsong'}}}};
+ const mix={musicTwoRowItemRenderer:{title:{simpleText:'Mix'},navigationEndpoint:{watchPlaylistEndpoint:{playlistId:'RDmix'}}}};
+ const p=await plugin(()=>({musicCarouselShelfRenderer:{title:{simpleText:'For You'},contents:[artist,track,mix]}}));
+ const page=await p.api.home();
+ assert.equal(page.layout,'discovery');
+ assert.deepEqual(plain(page.sections[0].entries).map(e=>Object.keys(e)[0]),['artist','track','station']);
+ assert.equal(page.sections[0].tracks[0].id,'song');
+ assert.equal(page.sections[0].stations.length,1);
+});
