@@ -122,9 +122,10 @@ const visionOS = (visitor) => ({
 
 // call asks the service as the website, or as another of its apps. An
 // anonymous call leaves the session out.
-async function call(endpoint, body, as = remix) {
+async function call(endpoint, body, as = remix, signal) {
   const res = await fetch(`${site}/youtubei/v1/${endpoint}?prettyPrint=false`, {
     method: "POST",
+    signal,
     headers: {
       "content-type": "application/json",
       "user-agent": webUA,
@@ -831,34 +832,156 @@ export async function stationNext({ id = "radio" } = {}) {
   try { return await task; } finally { if (stationLocks.get(id) === task) stationLocks.delete(id); }
 }
 
-// Lyrics, which the app only shows when they're timed. Better Lyrics times each
-// word, where YouTube times each line, so it goes first, and YouTube's are there
-// for what it doesn't have.
+// Lyrics sources fail independently. Only real timestamps enable synchronized
+// display; plain lyrics and explicitly instrumental records keep their meaning.
+const lyricCache = new Map();
+const lyricCooldown = new Map();
+const lyricUA = "MyGo Music/0.1.28 (https://github.com/maxbeau/mygo-music)";
+const hasTimedLyrics = (l) => Boolean(l?.lines?.length || /\[\d+:\d+(?:[.:]\d+)?\]/.test(l?.lrc || ""));
+const hasLyrics = (l) => hasTimedLyrics(l) || Boolean(l?.text?.trim() || l?.instrumental);
 
-export async function lyrics({ id }) {
-  const next = await call("next", { videoId: id, isAudioOnly: true }, android);
-  const playing = findAll(next, "playlistPanelVideoRenderer").find((v) => v.videoId === id);
-  const [better, own] = await Promise.allSettled([
-    playing ? betterLyrics(panelTrack(playing)) : null,
-    youtubeLyrics(next),
-  ]);
-  if (better.status === "rejected") console.warn(`Better Lyrics: ${better.reason?.message}`);
-  if (better.value?.lines.length) return better.value;
-  if (own.status === "rejected") throw own.reason;
-  return own.value;
+async function lyricDeadline(run, ms) {
+  const controller = new AbortController();
+  let timer;
+  try {
+    return await Promise.race([run(controller.signal), new Promise((_, reject) => {
+      timer = setTimeout(() => { controller.abort(); reject(new Error("Lyrics request timed out")); }, ms);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+async function lyricJSON(url) {
+  const host = new URL(url).hostname;
+  if ((lyricCooldown.get(host) || 0) > Date.now()) throw new Error("Lyrics provider temporarily unavailable");
+  return lyricDeadline(async(signal) => {
+    const res = await fetch(url, { signal, headers: { "user-agent": lyricUA } });
+    if (res.status === 404) return null;
+    // Availability varies by recording; never send the YouTube session here.
+    if (res.status === 401 && host === "api.betterlyrics.org") {
+      return null;
+    }
+    if (res.status === 429 || res.status === 503) {
+      const value = res.headers?.get("retry-after");
+      const seconds = Number(value);
+      const delay = value && !Number.isFinite(seconds) ? Date.parse(value) - Date.now() : (seconds || 60) * 1000;
+      lyricCooldown.set(host, Date.now() + Math.max(1000, delay));
+    }
+    if (!res.ok) throw new Error(`Lyrics provider: ${res.status}`);
+    return res.json();
+  }, 3000);
+}
+
+export async function lyrics({ id, track }) {
+  if (lyricCache.has(id)) return lyricCache.get(id);
+  const next = lyricDeadline(signal => call("next", { videoId: id, isAudioOnly: true }, remix, signal), 4000);
+  // Attach a rejection handler immediately even when supplied metadata needs no next response.
+  const metadata = track?.name ? Promise.resolve(track) : next.then(r => {
+    const playing = findAll(r, "playlistPanelVideoRenderer").find(v => v.videoId === id);
+    return playing ? panelTrack(playing) : null;
+  }).catch(() => null);
+  const own = next.then(r => lyricDeadline(signal => youtubeLyrics(r, signal), 4000));
+  const errors = [];
+  const other = metadata.then(async (song) => {
+    if (!song?.name || !song.artists?.length) return null;
+    let fallback = null;
+    for (const provider of [betterLyrics, lrcLibLyrics, kugouLyrics]) {
+      try {
+        const result = await provider(song);
+        if (hasTimedLyrics(result)) return result;
+        if (hasLyrics(result) && !fallback) fallback = result;
+      } catch (error) { errors.push(error); }
+    }
+    return fallback;
+  });
+  const result = await new Promise((resolve, reject) => {
+    const values = [];
+    let left = 2;
+    [own, other].forEach((task, i) => {
+      task.then(value => {
+        values[i] = value;
+        if (hasTimedLyrics(value)) resolve(value);
+      }, error => { errors.push(error); }).finally(() => {
+        if (--left === 0) {
+          const found = values.find(v => v?.text?.trim()) || values.find(v => v?.instrumental);
+          if (found) resolve(found);
+          else if (errors.length) reject(new Error("Couldn't load lyrics from the available providers"));
+          else resolve({ lines: [] });
+        }
+      });
+    });
+  });
+  if (hasLyrics(result)) {
+    lyricCache.set(id, result);
+    if (lyricCache.size > 64) lyricCache.delete(lyricCache.keys().next().value);
+  }
+  return result;
+}
+
+function lyricTitle(title) {
+  // Remove presentation labels, keeping Live/Remix/Cover and year qualifiers.
+  return title.replace(/\bOfficial\s+(?:Music\s+)?(?:Video|Audio|Lyrics?)\b/gi, "")
+    .replace(/[([【]\s*(?:HD|HQ|4K|高清|高音质)\s*[)\]】]/gi, "").replace(/[([【]\s*[)\]】]/g, "").trim();
+}
+const lyricKey = s => lyricTitle(s || "").normalize("NFKC").toLowerCase().replace(/现场|現場/g, "live").replace(/[^\p{L}\p{N}]/gu, "");
+
+function matchesLyricTrack(song, title, artist, duration, tolerance = 5) {
+  if (lyricKey(song.name) !== lyricKey(title)) return false;
+  const artists = (artist || "").split(/[,，、;&]/).map(lyricKey).filter(Boolean);
+  if (!song.artists.some(a => artists.includes(lyricKey(a.name)))) return false;
+  return !song.duration || !(duration > 0) || Math.abs(song.duration / 1000 - duration) <= tolerance;
+}
+
+async function lrcLibLyrics(song) {
+  const query = new URLSearchParams({ track_name: lyricTitle(song.name), artist_name: song.artists[0].name });
+  if (song.album?.name) query.set("album_name", song.album.name);
+  if (song.duration > 0 && song.duration <= 3600000) query.set("duration", String(Math.round(song.duration / 1000)));
+  let record = await lyricJSON(`https://lrclib.net/api/get?${query}`);
+  const matches = r => r && matchesLyricTrack(song, r.trackName, r.artistName, r.duration);
+  if (!matches(record) || !(record.syncedLyrics || record.plainLyrics || record.instrumental)) {
+    const search = new URLSearchParams({ track_name: lyricTitle(song.name), artist_name: song.artists[0].name });
+    const records = await lyricJSON(`https://lrclib.net/api/search?${search}`);
+    record = (Array.isArray(records) ? records : []).filter(r => matches(r) && (r.syncedLyrics || r.plainLyrics || r.instrumental))
+      .sort((a,b) => Number(Boolean(b.syncedLyrics)) - Number(Boolean(a.syncedLyrics)) || Math.abs(a.duration - song.duration/1000) - Math.abs(b.duration - song.duration/1000))[0];
+  }
+  if (!record) return null;
+  if (record.syncedLyrics) return { lrc: record.syncedLyrics };
+  if (record.plainLyrics) return { text: record.plainLyrics };
+  return record.instrumental ? { instrumental: true } : null;
+}
+
+async function kugouLyrics(song) {
+  const query = new URLSearchParams({ ver: "1", man: "yes", client: "pc", keyword: `${lyricTitle(song.name)} - ${song.artists[0].name}` });
+  if (song.duration) query.set("duration", String(song.duration));
+  const result = await lyricJSON(`https://lyrics.kugou.com/search?${query}`);
+  const candidate = result?.candidates?.filter(c => matchesLyricTrack(song, c.song, c.singer, c.duration/1000, 8))
+    .sort((a,b) => Math.abs(a.duration - song.duration) - Math.abs(b.duration - song.duration))[0];
+  if (!candidate) return null;
+  const params = new URLSearchParams({ fmt: "lrc", charset: "utf8", client: "pc", ver: "1", id: candidate.id, accesskey: candidate.accesskey });
+  const data = await lyricJSON(`https://lyrics.kugou.com/download?${params}`);
+  if (!data?.content) return null;
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const bytes = [];
+  let bits = 0, value = 0;
+  for (const char of data.content.replace(/\s/g, "")) {
+    if (char === "=") break;
+    const n = alphabet.indexOf(char);
+    if (n < 0) throw new Error("Invalid encoded lyrics");
+    value = (value << 6) | n;
+    bits += 6;
+    if (bits >= 8) { bits -= 8; bytes.push((value >> bits) & 255); }
+  }
+  const lrc = new TextDecoder().decode(new Uint8Array(bytes));
+  return hasTimedLyrics({ lrc }) ? { lrc } : null;
 }
 
 // Better Lyrics answers only for songs it has kept, and says so with a status:
 // none, not kept, or too busy are all no lyrics.
 async function betterLyrics(track) {
   const query = new URLSearchParams({ s: track.name, a: track.artists.map((a) => a.name).join(", ") });
-  if (track.album.name) query.set("al", track.album.name);
+  if (track.album?.name) query.set("al", track.album.name);
   if (track.duration) query.set("d", String(Math.round(track.duration / 1000)));
-  const res = await fetch(`https://api.betterlyrics.org/getLyrics?${query}`, {
-    headers: { "user-agent": "MyGo Music (https://github.com/egoist/mygo-music)" },
-  });
-  if (!res.ok) return null;
-  const lines = linesOfTTML((await res.json()).ttml || "");
+  const data = await lyricJSON(`https://api.betterlyrics.org/getLyrics?${query}`);
+  const lines = linesOfTTML(data?.ttml || "");
   return lines.length ? { lines } : null;
 }
 
@@ -871,12 +994,14 @@ const unescapeXML = (s) =>
 // A time as TTML writes it, such as 1:02.500 or 62.5, in milliseconds.
 function clockOf(value) {
   if (!value) return null;
+  const offset = value.trim().match(/^(\d+(?:\.\d+)?)(ms|s)$/);
+  if (offset) return Math.round(Number(offset[1]) * (offset[2] === "s" ? 1000 : 1));
   const parts = value.trim().replace(/s$/, "").split(":");
   if (parts.length > 3 || parts.some((p) => p === "" || !(Number(p) >= 0))) return null;
   return Math.round(parts.reduce((sum, p) => sum * 60 + Number(p), 0) * 1000);
 }
 
-const attrOf = (attrs, name) => attrs.match(new RegExp(`\\s${name}="([^"]*)"`))?.[1];
+const attrOf = (attrs, name) => attrs.match(new RegExp(`\\s${name}\\s*=\\s*(["'])(.*?)\\1`))?.[2];
 
 // The lines of a TTML document: each <p> is a line, and each <span> in it with a
 // time is a word, or part of one. The text between them is the spacing, which
@@ -924,20 +1049,21 @@ function linesOfTTML(ttml) {
   return lines;
 }
 
-async function youtubeLyrics(next) {
-  const lyricsId = findAll(next, "browseId").find((b) => /^MPLY/.test(b));
-  if (!lyricsId) return { lines: [] };
-  const r = await call("browse", { browseId: lyricsId }, android);
+async function youtubeLyrics(next, signal) {
+  const endpoint = findAll(next, "browseEndpoint").find(e => /^MPLY/.test(e.browseId));
+  if (!endpoint) return { lines: [] };
+  const r = await call("browse", { browseId: endpoint.browseId, ...(endpoint.params ? { params: endpoint.params } : {}) }, remix, signal);
   const timed = findOne(r, "timedLyricsData") || [];
-  return {
-    lines: timed
-      .filter((l) => l.lyricLine)
+  const lines = timed
+      .filter((l) => l.lyricLine && l.cueRange?.startTimeMilliseconds != null && Number.isFinite(Number(l.cueRange.startTimeMilliseconds)))
       .map((l) => ({
         start: Number(l.cueRange?.startTimeMilliseconds) || 0,
         end: Number(l.cueRange?.endTimeMilliseconds) || 0,
         text: l.lyricLine,
-      })),
-  };
+      }));
+  if (lines.length) return { lines };
+  const text = findAll(r, "musicDescriptionShelfRenderer").map(s => textOf(s.description)).filter(Boolean).join("\n\n") || timed.map(l => l.lyricLine).filter(Boolean).join("\n");
+  return text.trim() ? { text: text.trim() } : { lines: [] };
 }
 
 // Playing.

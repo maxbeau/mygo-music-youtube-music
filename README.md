@@ -22,7 +22,7 @@ Or paste the GitHub URL in Settings > Plugins:
 
 In Settings > Plugins, allow YouTube Music to start programs. To get your library, click **Sign In** and sign in to Google in the window that opens.
 
-This version needs MyGo Music 0.1.25 or later, and only starts ffmpeg and yt-dlp: from the PATH, `/opt/homebrew/bin` or `/usr/local/bin`. If they're somewhere else, link them into one of those.
+This version needs MyGo Music 0.1.28 or later, and only starts ffmpeg and yt-dlp: from the PATH, `/opt/homebrew/bin` or `/usr/local/bin`. If they're somewhere else, link them into one of those.
 
 ## Signing in
 
@@ -40,7 +40,16 @@ Tracks are fetched the way YouTube's Vision Pro app fetches them, then ffmpeg co
 
 ## Lyrics
 
-From [Better Lyrics](https://github.com/better-lyrics/better-lyrics) when available, otherwise from YouTube Music.
+YouTube Music lyrics run independently of BetterLyrics, LRCLIB and KuGou
+fallbacks. Track metadata supplied by the host lets those fallbacks work even
+when YouTube's queue lookup fails. Timed lyrics take priority; plain text is
+retained when timing is unavailable. Matching checks title, artist and duration
+and keeps Live/Remix/Cover qualifiers. Each request has a timeout and provider
+rate limits are respected. Only successful results are cached, up to 64 songs
+in memory; failures can be retried.
+
+Lyrics lookups send song metadata to `api.betterlyrics.org`, `lrclib.net` and
+`lyrics.kugou.com`. YouTube session cookies are never sent to those providers.
 
 ## Radio and discovery
 
