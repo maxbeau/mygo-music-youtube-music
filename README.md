@@ -1,6 +1,6 @@
 # YouTube Music for MyGo Music
 
-Plays YouTube Music in [MyGo Music](https://github.com/maxbeau/mygo-music/tree/codex/youtube-discovery). It isn't affiliated with or endorsed by YouTube or Google, uses YouTube's private API, and may stop working at any time.
+Plays YouTube Music in [MyGo Music](https://github.com/maxbeau/mygo-music). It isn't affiliated with or endorsed by YouTube or Google, uses YouTube's private API, and may stop working at any time.
 
 ## Install
 
@@ -49,6 +49,10 @@ rate limits are respected. Only successful results are cached, up to 64 songs
 in memory; failures can be retried. MyGo 0.1.29 also persists the selected
 lyrics, translations, romanization and timing offset per source/song for offline
 reuse. An explicit refresh bypasses the plugin memory cache.
+
+The `lyricSources` declaration in `plugin.json` supplies the host source selector
+(MyGo 0.1.30+). Provider IDs stay in the plugin; display names use its locale
+catalog. An omitted filter searches the plugin default sources.
 
 The host Lyrics Options menu can search YouTube, BetterLyrics, LRCLIB and KuGou
 with an editable title/artist, preview candidates and apply a selection. Manual

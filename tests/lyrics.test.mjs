@@ -200,3 +200,21 @@ test('explicit refresh bypasses lyric cache',async()=>{
  assert.equal((await p.api.lyrics({id:'seed',track:song})).lrc,lrc);
  assert.equal((await p.api.lyrics({id:'seed',track:song,refresh:true})).lrc,text);
 });
+
+// Every advertised source ID selects its actual provider without querying other providers.
+test('declared lyric filters dispatch only to their provider',async()=>{
+ const manifest=JSON.parse(await readFile(new URL('../plugin.json',import.meta.url),'utf8'));
+ for(const source of manifest.lyricSources){
+  const p=await plugin((u,b)=>{
+   if(u.hostname==='music.youtube.com')return b.videoId?next:{musicDescriptionShelfRenderer:{description:{simpleText:'Words'}}};
+   if(u.hostname==='lrclib.net')return [record({id:1,syncedLyrics:lrc})];
+   if(u.hostname==='lyrics.kugou.com')return {candidates:[]};
+   if(u.hostname==='api.betterlyrics.org')return {};
+   throw new Error('unexpected provider');
+  });
+  await p.api.searchLyrics({track:song,provider:source.id});
+  const expected={YouTube:'music.youtube.com',BetterLyrics:'api.betterlyrics.org',LRCLIB:'lrclib.net',KuGou:'lyrics.kugou.com'}[source.id];
+  assert.ok(p.requests.length>0,`${source.id} was advertised but never queried`);
+  assert.ok(p.requests.every(r=>r.url.hostname===expected),`${source.id} queried another provider`);
+ }
+});
