@@ -1,7 +1,7 @@
 // YouTube Music, for personal use. The catalog comes from the API its website
 // calls. A track's audio is found as YouTube's app for the Vision Pro asks for
 // it, which is given addresses that play as they are, and ffmpeg turns it into
-// the MP3 the app can play, as neither AAC nor Opus is something it decodes.
+// an MP3 stream, keeping the plugin's existing playback path across formats.
 // Should YouTube stop answering that app, yt-dlp finds the audio instead, if
 // it's installed. Your library takes your own session, which signing in on
 // Google's page in a window of the app gives, as its cookies.
@@ -139,11 +139,31 @@ async function call(endpoint, body, as = remix) {
     endSession();
     throw fail("signIn", t("Your YouTube Music session has ended: sign in again"));
   }
-  if (!res.ok) throw new Error(`${endpoint}: ${res.status}`);
+  if (!res.ok) { const error = new Error(`${endpoint}: ${res.status}`); error.status = res.status; throw error; }
   return res.json();
 }
 
 const browseId = (id) => call("browse", { browseId: id });
+
+// Keep navigation parameters, not just browseId: artist discographies and
+// mood pages often share an ID and differ only by params.
+const browsePageId = (endpoint, title = "") => `yt:${encodeURIComponent(JSON.stringify({ ...endpoint, title }))}`;
+
+function watchOf(nav) {
+  const w = nav?.watchEndpoint || nav?.watchPlaylistEndpoint;
+  if (!w) return null;
+  const out = {};
+  for (const key of ["videoId", "playlistId", "playlistSetVideoId", "index", "params"]) {
+    if (w[key] !== undefined) out[key] = w[key];
+  }
+  return out.videoId || out.playlistId ? out : null;
+}
+
+function stationFor(endpoint, name, imageUrl) {
+  // The endpoint in the ID lets a restored queue recover even if its stored
+  // continuation expired. Different starts have independent sessions.
+  return { id: `yt-radio:${encodeURIComponent(JSON.stringify({ endpoint, session: playbackNonce() }))}`, name, imageUrl, public: true };
+}
 
 // Answers are deep and change shape, so what's in them is found by name.
 
@@ -231,10 +251,12 @@ function rowOf(r) {
   const image = imageOf(r.thumbnail);
   if (videoId) {
     const grey = r.musicItemRendererDisplayPolicy === "MUSIC_ITEM_RENDERER_DISPLAY_POLICY_GREY_OUT";
-    return { kind: "track", value: trackFrom(videoId, name, credits, image, grey) };
+    return { kind: "track", value: { ...trackFrom(videoId, name, credits, image, grey), playlistItemId: r.playlistItemData?.playlistSetVideoId || findOne(r.menu, "playlistEditEndpoint")?.actions?.find((a) => a.setVideoId)?.setVideoId } };
   }
   const target = r.navigationEndpoint;
-  return collectionOf(target, name, runs, image);
+  const got = collectionOf(target, name, runs, image);
+  if (got?.kind === "playlist") got.value.mine = Boolean(findOne(r.menu, "playlistEditEndpoint") || findOne(r.menu, "playlistEditorEndpoint"));
+  return got;
 }
 
 // A card: anything at all, by where it leads.
@@ -243,13 +265,17 @@ function cardOf(r) {
   const runs = r.subtitle?.runs || [];
   const image = imageOf(r.thumbnailRenderer);
   const nav = r.navigationEndpoint;
+  const watch = watchOf(nav);
+  if (watch?.playlistId) return { kind: "station", value: stationFor(watch, name, image) };
   if (nav?.watchEndpoint?.videoId) {
     const credits = creditsOf(runs);
     // On a card, words come first that say what it is.
     credits.names = credits.names.slice(1);
     return { kind: "track", value: trackFrom(nav.watchEndpoint.videoId, name, credits, image) };
   }
-  return collectionOf(nav, name, runs, image);
+  const got = collectionOf(nav, name, runs, image);
+  if (got?.kind === "playlist") got.value.mine = Boolean(findOne(r.menu, "playlistEditEndpoint") || findOne(r.menu, "playlistEditorEndpoint"));
+  return got;
 }
 
 function collectionOf(nav, name, runs, image) {
@@ -274,7 +300,11 @@ function itemsOf(list) {
   for (const item of list || []) {
     const row = item.musicResponsiveListItemRenderer;
     const card = item.musicTwoRowItemRenderer;
-    const got = row ? rowOf(row) : card ? cardOf(card) : null;
+    const button = item.musicNavigationButtonRenderer;
+    const endpoint = button?.clickCommand?.browseEndpoint;
+    const got = row ? rowOf(row) : card ? cardOf(card) : endpoint ? {
+      kind: "link", value: { title: textOf(button.buttonText), page: browsePageId(endpoint, textOf(button.buttonText)) },
+    } : null;
     if (got) out.push(got);
   }
   return out;
@@ -305,29 +335,55 @@ function shelfTitle(shelf) {
 // The sections of a page of shelves, in their order.
 async function sectionsOf(answer) {
   const sections = [];
-  for (const list of findAll(answer, "sectionListRenderer").concat(findAll(answer, "sectionListContinuation"))) {
-    for (const entry of list.contents || []) {
-      const shelf =
-        entry.musicCarouselShelfRenderer || entry.musicShelfRenderer || entry.musicPlaylistShelfRenderer || entry.gridRenderer;
-      if (!shelf) continue;
-      const items = itemsOf(shelf.contents || shelf.items);
-      if (!items.length) continue;
-      sections.push({
-        title: shelfTitle(shelf),
-        tracks: await withDurations(ofKind(items, "track")),
-        albums: ofKind(items, "album"),
-        artists: ofKind(items, "artist"),
-        playlists: ofKind(items, "playlist"),
-      });
+  const shelves = [];
+  const names = new Set(["musicCarouselShelfRenderer", "musicShelfRenderer", "musicPlaylistShelfRenderer", "gridRenderer",
+    "gridContinuation", "musicShelfContinuation", "musicPlaylistShelfContinuation"]);
+  function visit(node) {
+    if (Array.isArray(node)) return node.forEach(visit);
+    if (!node || typeof node !== "object") return;
+    for (const [key, value] of Object.entries(node)) {
+      if (names.has(key)) shelves.push(value);
+      else visit(value);
     }
   }
+  visit(answer);
+  const appended = findAll(answer, "appendContinuationItemsAction");
+  for (const action of appended) shelves.push({ contents: action.continuationItems });
+  for (const shelf of shelves) {
+    const items = itemsOf(shelf.contents || shelf.items);
+    const title = shelfTitle(shelf);
+    const endpoint = shelf.bottomEndpoint?.browseEndpoint ||
+      findOne(shelf.header, "browseEndpoint") || shelf.title?.runs?.find((r) => r.navigationEndpoint?.browseEndpoint)?.navigationEndpoint.browseEndpoint ||
+      findOne(shelf.bottomText, "browseEndpoint");
+    const token = nextToken(shelf);
+    const section = {
+      title,
+      tracks: await withDurations(ofKind(items, "track")),
+      albums: ofKind(items, "album"), artists: ofKind(items, "artist"),
+      playlists: ofKind(items, "playlist"), stations: ofKind(items, "station"), links: ofKind(items, "link"),
+      morePage: endpoint ? browsePageId(endpoint, title) : token ? browsePageId({ continuation: token }, title) : undefined,
+    };
+    if (items.length || section.morePage) sections.push(section);
+  }
+  // Category buttons need not be in a shelf.
+  if (!shelves.length) {
+    const items = itemsOf(findAll(answer, "musicNavigationButtonRenderer").map((r) => ({ musicNavigationButtonRenderer: r })));
+    if (items.length) sections.push({ links: ofKind(items, "link") });
+  }
+  return sections;
+}
+
+function pageSectionsMore(answer, sections, title) {
+  const root = findOne(answer, "sectionListRenderer") || findOne(answer, "sectionListContinuation");
+  const token = nextToken(root?.continuations);
+  if (token) sections.push({ links: [{ title: t("More"), page: browsePageId({ continuation: token }, title) }] });
   return sections;
 }
 
 // A next page's token, in either of the ways it's given.
 function nextToken(node) {
   if (!node) return "";
-  const old = findOne(node, "nextContinuationData");
+  const old = findOne(node, "nextContinuationData") || findOne(node, "nextRadioContinuationData");
   if (old?.continuation) return old.continuation;
   return findOne(node, "continuationCommand")?.token || "";
 }
@@ -386,6 +442,7 @@ export async function signIn() {
     until: ["SAPISID", "__Secure-3PSID"],
     userAgent: browserUA,
   });
+  endSession();
   host.storage.set("cookie", session);
   likedSet = null;
   const me = await account();
@@ -404,28 +461,47 @@ export function signOut() {
 function endSession() {
   host.storage.remove("cookie");
   likedSet = null;
+  tokens.clear();
+  stationStates.clear();
+  sessionGeneration++;
+  legacyStation = "";
+  host.storage.remove("radioSessions");
+  playlistRows.clear();
 }
 
 // Pages.
 
 export async function home() {
   const answer = await browseId("FEmusic_home");
-  const sections = await sectionsOf(answer);
-  // It comes in a few pages. Two more make a page that's worth scrolling.
-  let token = nextToken(findOne(answer, "sectionListRenderer"));
-  for (let i = 0; token && i < 2; i++) {
-    const more = await call("browse", { continuation: token });
-    sections.push(...(await sectionsOf(more)));
-    token = nextToken(findOne(more, "sectionListContinuation"));
-  }
-  return { title: t("Home"), sections };
+  return { title: t("Home"), sections: pageSectionsMore(answer, await sectionsOf(answer), t("Home")) };
 }
 
 export async function browse({ page }) {
-  const ids = { charts: ["FEmusic_charts", "Charts"], new: ["FEmusic_new_releases", "New Releases"] };
+  const ids = { charts: ["FEmusic_charts", "Charts"], new: ["FEmusic_new_releases", "New Releases"], moods: ["FEmusic_moods_and_genres", "Moods & Genres"], artists: ["FEmusic_library_corpus_artists", "Following"] };
   const known = ids[page];
-  if (known) return { title: t(known[1]), sections: await sectionsOf(await browseId(known[0])) };
-  throw fail("unavailable", t("no such page"));
+  let request, title;
+  if (known) {
+    if (page === "artists") needAccount();
+    [title, request] = [t(known[1]), { browseId: known[0] }];
+  } else if (page.startsWith("yt:")) {
+    const decoded = JSON.parse(decodeURIComponent(page.slice(3)));
+    title = decoded.title || "";
+    request = {};
+    for (const key of ["browseId", "params", "continuation"]) if (typeof decoded[key] === "string") request[key] = decoded[key];
+    if (!request.browseId && !request.continuation) throw fail("unavailable", t("no such page"));
+  } else throw fail("unavailable", t("no such page"));
+  const answer = await call("browse", request);
+  return { title, sections: pageSectionsMore(answer, await sectionsOf(answer), title) };
+}
+
+export async function related({ id }) {
+  const answer = await call("next", { videoId: id, isAudioOnly: true });
+  const tabs = findOne(answer, "watchNextTabbedResultsRenderer")?.tabs || [];
+  const endpoint = tabs.map((tab) => tab.tabRenderer?.endpoint?.browseEndpoint).find((e) => e?.browseId?.startsWith("MPTR")) ||
+    tabs[2]?.tabRenderer?.endpoint?.browseEndpoint;
+  if (!endpoint) return { title: t("Related Music"), sections: [] };
+  const page = await call("browse", endpoint);
+  return { title: t("Related Music"), sections: await sectionsOf(page) };
 }
 
 // Search. Each kind has its filter, which the website sends in this form.
@@ -458,6 +534,13 @@ export async function suggest({ query }) {
 
 // Albums and artists.
 
+function librarySaved(answer) {
+  const like = findOne(answer, "likeButtonRenderer");
+  if (like) return like.likeStatus === "LIKE";
+  const toggle = findAll(answer, "toggleButtonRenderer").find((b) => ["LIBRARY_ADD", "LIBRARY_SAVED"].includes(b.defaultIcon?.iconType));
+  return Boolean(toggle?.isToggled || toggle?.defaultIcon?.iconType === "LIBRARY_SAVED");
+}
+
 function headerOf(answer) {
   return findOne(answer, "musicResponsiveHeaderRenderer") || findOne(answer, "musicDetailHeaderRenderer") || {};
 }
@@ -472,6 +555,7 @@ async function albumPage({ id }) {
     imageUrl: imageOf(header.thumbnail),
     artists: credits.artists,
     released: textOf(header.subtitle).match(/\b\d{4}\b/)?.[0],
+    saved: librarySaved(answer),
   };
   const shelf = findOne(answer, "musicShelfRenderer");
   const tracks = ofKind(itemsOf(shelf?.contents), "track").map((t) => ({
@@ -488,9 +572,10 @@ async function artistPage({ id }) {
   const header = findOne(answer, "musicImmersiveHeaderRenderer") || findOne(answer, "musicVisualHeaderRenderer") || {};
   const sections = await sectionsOf(answer);
   return {
-    artist: { id, name: textOf(header.title), imageUrl: imageOf(header.thumbnail || header.foregroundThumbnail) },
-    tracks: sections.flatMap((s) => s.tracks).slice(0, 20),
-    albums: sections.flatMap((s) => s.albums),
+    artist: { id, name: textOf(header.title), imageUrl: imageOf(header.thumbnail || header.foregroundThumbnail), following: Boolean(findOne(answer, "subscribeButtonRenderer")?.subscribed) },
+    tracks: sections.flatMap((s) => s.tracks || []),
+    albums: sections.flatMap((s) => s.albums || []),
+    sections: pageSectionsMore(answer, sections, textOf(header.title)),
   };
 }
 
@@ -501,27 +586,19 @@ export { albumPage as album, artistPage as artist };
 // A long playlist comes in pages: this many is thousands of songs.
 const pagesAtMost = 30;
 
-async function tracksOfAll(answer) {
-  const out = [];
-  let { items, token } = rowsOf(answer);
-  out.push(...ofKind(items, "track"));
-  for (let i = 0; token && i < pagesAtMost; i++) {
-    ({ items, token } = rowsOf(await call("browse", { continuation: token })));
-    out.push(...ofKind(items, "track"));
-  }
-  return out;
-}
-
 async function playlistPage({ id }) {
   const answer = await browseId(`VL${id}`);
   const header = headerOf(answer);
-  const tracks = await withDurations(await tracksOfAll(answer));
+  const tracks = await withDurations(await playlistTracks(answer));
+  playlistRows.set(plainPlaylistId(id), tracks.map((r) => ({ id: r.id, setVideoId: r.playlistItemId })));
   return {
     id,
     name: textOf(header.title),
     imageUrl: imageOf(header.thumbnail),
     description: textOf(findOne(header.description, "description") || header.description),
     owner: textOf(header.straplineTextOne),
+    mine: Boolean(findOne(answer, "playlistEditEndpoint") || findOne(answer, "playlistEditorEndpoint") || findOne(answer, "musicEditablePlaylistDetailHeaderRenderer")),
+    saved: librarySaved(answer),
     trackCount: tracks.length,
     tracks,
   };
@@ -532,9 +609,19 @@ export { playlistPage as playlist };
 // rather than asking someone who's only browsing to sign in.
 export async function playlists() {
   if (!cookie()) return [];
-  const items = (await sectionsOf(await browseId("FEmusic_liked_playlists"))).flatMap((s) => s.playlists);
+  const items = [];
+  let answer = await browseId("FEmusic_liked_playlists");
+  const seen = new Set();
+  for (let page = 0; ; page++) {
+    items.push(...(await sectionsOf(answer)).flatMap((s) => s.playlists || []));
+    const token = nextToken(answer);
+    if (!token) break;
+    if (seen.has(token) || page >= pagesAtMost) throw new Error(t("The playlist is too large to edit safely"));
+    seen.add(token);
+    answer = await call("browse", { continuation: token });
+  }
   // Liked Music has an entry of its own, and episodes for later aren't songs.
-  return items.filter((p) => p.id !== "LM" && p.id !== "SE").map((p) => ({ ...p, saved: true }));
+  return items.filter((p) => p.id !== "LM" && p.id !== "SE").map((p) => ({ ...p, saved: !p.mine }));
 }
 
 export async function liked({ offset }) {
@@ -589,10 +676,19 @@ export async function recent() {
 
 // Radio: songs like the one last played.
 
-const radio = { id: "radio", name: "Radio", description: "Songs like the one you played last." };
+const defaultRadio = { id: "radio", name: t("Radio"), description: t("Songs like the one you played last."), public: true };
 
-export function stations() {
-  return [radio];
+export function stations() { return [defaultRadio]; }
+
+export async function radio({ kind, id }) {
+  if (!id) throw fail("unavailable", t("No radio is available"));
+  if (kind === "track") return stationFor({ videoId: id, playlistId: `RDAMVM${id}` }, t("Song Radio"));
+  if (kind !== "artist") throw fail("unavailable", t("No radio is available"));
+  const answer = await browseId(id);
+  const header = findOne(answer, "musicImmersiveHeaderRenderer") || findOne(answer, "musicVisualHeaderRenderer") || {};
+  const endpoint = watchOf(header.startRadioButton?.buttonRenderer?.navigationEndpoint);
+  if (!endpoint) throw fail("unavailable", t("No radio is available"));
+  return stationFor(endpoint, `${textOf(header.title)} · ${t("Artist Radio")}`, imageOf(header.thumbnail || header.foregroundThumbnail));
 }
 
 // What's played also goes in your history on YouTube Music, which its
@@ -639,18 +735,99 @@ function panelTrack(v) {
   return trackFrom(v.videoId, textOf(v.title), credits, imageOf(v.thumbnail));
 }
 
-// Each batch starts from what's playing by then, so a radio drifts as a radio
-// does. With nothing played yet, the first song of Home will do. Nothing to go
-// on is an empty batch, which the app asks again for: Home isn't the same each time.
-export async function stationNext() {
-  let seed = host.storage.get("lastPlayed");
-  if (!seed) {
-    const { sections } = await home();
-    seed = sections.flatMap((s) => s.tracks)[0]?.id;
-    if (!seed) return [];
+// One queue owns one endpoint and continuation. Commit state only after all
+// requests succeed so a transient failure never consumes a page.
+const stationStates = new Map();
+const stationLocks = new Map();
+let legacyStation = "";
+let sessionGeneration = 0;
+
+function saveRadio(id, state) {
+  stationStates.set(id, state);
+  const saved = host.storage.get("radioSessions") || {};
+  delete saved[id];
+  saved[id] = state;
+  const entries = Object.entries(saved).slice(-12);
+  host.storage.set("radioSessions", Object.fromEntries(entries));
+}
+
+async function nextRadioPage(endpoint, continuation) {
+  const body = { ...endpoint, isAudioOnly: true, enablePersistentPlaylistPanel: true, tunerSettingValue: "AUTOMIX_SETTING_NORMAL" };
+  if (continuation) body.continuation = continuation;
+  let last;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const answer = await call("next", body);
+      const panel = answer.continuationContents?.playlistPanelContinuation || findOne(answer, "playlistPanelRenderer");
+      if (!panel) throw fail("emptyRadio", t("YouTube gave no radio queue"));
+      return {
+        tracks: (panel.contents || []).flatMap((item) => item.playlistPanelVideoRenderer?.videoId ? [panelTrack(item.playlistPanelVideoRenderer)] : []),
+        continuation: nextToken(panel) || null,
+        automix: watchOf(findOne(panel, "automixPlaylistVideoRenderer")?.navigationEndpoint),
+      };
+    } catch (e) {
+      if (e.code === "signIn" || e.code === "unavailable") throw e;
+      last = e;
+    }
   }
-  const answer = await call("next", { videoId: seed, playlistId: `RDAMVM${seed}`, isAudioOnly: true, enablePersistentPlaylistPanel: true, tunerSettingValue: "AUTOMIX_SETTING_NORMAL" });
-  return findAll(answer, "playlistPanelVideoRenderer").filter((v) => v.videoId !== seed).map(panelTrack);
+  throw last;
+}
+
+export async function stationNext({ id = "radio" } = {}) {
+  if (id === "radio") {
+    if (!legacyStation) {
+      let seed = host.storage.get("lastPlayed");
+      if (!seed) seed = (await home()).sections.flatMap((s) => s.tracks || [])[0]?.id;
+      if (!seed) return [];
+      legacyStation = (await radio({ kind: "track", id: seed })).id;
+    }
+    id = legacyStation;
+  }
+  const generation = sessionGeneration;
+  const before = stationLocks.get(id) || Promise.resolve();
+  const task = before.catch(() => {}).then(async () => {
+    if (!id.startsWith("yt-radio:")) throw fail("unavailable", t("No radio is available"));
+    const seed = JSON.parse(decodeURIComponent(id.slice(9))).endpoint;
+    const old = stationStates.get(id) || host.storage.get("radioSessions")?.[id];
+    const state = old ? { ...old, seen: [...old.seen] } : { endpoint: seed, continuation: null, seen: seed.videoId ? [seed.videoId] : [], started: false, finished: false };
+    if (state.finished) return [];
+    const seen = new Set(state.seen);
+    const tracks = [];
+    for (let page = 0; page < 4; page++) {
+      let result;
+      try { result = await nextRadioPage(state.endpoint, state.continuation); }
+      catch (error) {
+        if (state.continuation && (error.status === 400 || error.status === 404 || error.code === "emptyRadio")) {
+          result = await nextRadioPage(state.endpoint, null);
+        } else if (!state.started && state.endpoint.playlistId?.startsWith("RDAMVM") && error.code === "emptyRadio") {
+          state.endpoint = { videoId: state.endpoint.videoId };
+          result = await nextRadioPage(state.endpoint, null);
+        } else throw error;
+      }
+      if (!state.started && result.tracks.length <= 1 && state.endpoint.playlistId?.startsWith("RDAMVM")) {
+        state.endpoint = { videoId: state.endpoint.videoId };
+        result = await nextRadioPage(state.endpoint, null);
+      }
+      state.started = true;
+      for (const track of result.tracks) if (!seen.has(track.id) && !track.unavailable) {
+        seen.add(track.id);
+        tracks.push(track);
+      }
+      state.continuation = result.continuation;
+      if (result.automix) {
+        state.endpoint = result.automix;
+        state.continuation = null;
+      }
+      state.finished = !state.continuation && !result.automix;
+      if (tracks.length || state.finished) break;
+    }
+    state.seen = [...seen].slice(-2000);
+    if (generation !== sessionGeneration) return [];
+    saveRadio(id, state);
+    return tracks;
+  });
+  stationLocks.set(id, task);
+  try { return await task; } finally { if (stationLocks.get(id) === task) stationLocks.delete(id); }
 }
 
 // Lyrics, which the app only shows when they're timed. Better Lyrics times each
@@ -1013,4 +1190,138 @@ export async function stream({ id, quality }) {
     bitRate: kbps * 1000,
     gain: source.gain,
   };
+}
+
+// Cloud writes use playlist occurrence IDs. A video may occur more than once.
+const playlistRows = new Map();
+const playlistLocks = new Map();
+
+function mutationOK(answer) {
+  if (answer.error || answer.status && answer.status !== "STATUS_SUCCEEDED" && answer.status !== "SUCCESS") {
+    throw new Error(answer.error?.message || t("YouTube refused the change"));
+  }
+  return answer;
+}
+
+async function mutate(endpoint, body) {
+  needAccount();
+  return mutationOK(await call(endpoint, body));
+}
+
+export async function savePlaylist({ id, on }) {
+  await mutate(on ? "like/like" : "like/removelike", { target: { playlistId: plainPlaylistId(id) } });
+}
+
+export async function followArtist({ id, on }) {
+  needAccount();
+  const answer = await browseId(id);
+  const channel = findOne(answer, "subscribeButtonRenderer")?.channelId || (/^UC/.test(id) ? id : "");
+  if (!channel) throw fail("unavailable", t("YouTube gave no artist channel"));
+  await mutate(on ? "subscription/subscribe" : "subscription/unsubscribe", { channelIds: [channel], params: "EgIIAhgA" });
+}
+
+export async function saveAlbum({ id, on }) {
+  needAccount();
+  const answer = await browseId(id);
+  const target = findAll(answer, "likeEndpoint").map((e) => e.target?.playlistId).find(Boolean) ||
+    findAll(answer, "watchEndpoint").map((e) => e.playlistId).find(Boolean);
+  if (!target) throw fail("unavailable", t("YouTube gave no album playlist"));
+  await savePlaylist({ id: target, on });
+}
+
+export async function savedAlbums({ offset = 0 }) {
+  needAccount();
+  const token = pageToken("savedAlbums", offset);
+  if (offset > 0 && !token) return { albums: [], more: false };
+  const answer = token ? await call("browse", { continuation: token }) : await browseId("FEmusic_liked_albums");
+  const sections = await sectionsOf(answer);
+  const albums = sections.flatMap((s) => s.albums || []).map((a) => ({ ...a, saved: true }));
+  return { albums, more: albums.length > 0 && keepToken("savedAlbums", offset + albums.length, nextToken(answer)) };
+}
+
+export async function createPlaylist({ name }) {
+  const answer = await mutate("playlist/create", { title: name, privacyStatus: "PRIVATE" });
+  if (!answer.playlistId) throw new Error(t("YouTube gave no playlist ID"));
+  return { id: answer.playlistId, name, mine: true, tracks: [] };
+}
+
+export async function renamePlaylist({ id, name }) {
+  await mutate("browse/edit_playlist", { playlistId: plainPlaylistId(id), actions: [{ action: "ACTION_SET_PLAYLIST_NAME", playlistName: name }] });
+}
+
+export async function deletePlaylist({ id }) {
+  await mutate("playlist/delete", { playlistId: plainPlaylistId(id) });
+  playlistRows.delete(plainPlaylistId(id));
+}
+
+function playlistWrite(id, fn) {
+  const old = playlistLocks.get(id) || Promise.resolve();
+  const generation = sessionGeneration;
+  const task = old.catch(() => {}).then(() => {
+    if (generation !== sessionGeneration) throw fail("signIn");
+    return fn();
+  });
+  playlistLocks.set(id, task);
+  return task.finally(() => { if (playlistLocks.get(id) === task) playlistLocks.delete(id); });
+}
+
+export async function addToPlaylist({ id, trackIds }) {
+  needAccount();
+  return playlistWrite(id, async () => {
+    if (!trackIds.length) return;
+    await mutate("browse/edit_playlist", { playlistId: plainPlaylistId(id), actions: trackIds.map((videoId) => ({ action: "ACTION_ADD_VIDEO", addedVideoId: videoId })) });
+    playlistRows.delete(plainPlaylistId(id));
+  });
+}
+
+export async function removeFromPlaylist({ id, trackIds }) {
+  needAccount();
+  return playlistWrite(id, async () => {
+    const rows = await playlistEntries(id);
+    const wanted = new Set(trackIds);
+    const selected = rows.filter((r) => wanted.has(r.id));
+    if (!selected.length) return;
+    if (selected.some((r) => !r.setVideoId)) throw new Error(t("Reload the playlist before editing it"));
+    await mutate("browse/edit_playlist", { playlistId: plainPlaylistId(id), actions: selected.map((r) => ({ action: "ACTION_REMOVE_VIDEO", removedVideoId: r.id, setVideoId: r.setVideoId })) });
+    playlistRows.set(plainPlaylistId(id), rows.filter((r) => !wanted.has(r.id)));
+  });
+}
+
+export async function movePlaylistTrack({ id, from, to }) {
+  needAccount();
+  return playlistWrite(id, async () => {
+    const expected = playlistRows.get(plainPlaylistId(id));
+    const rows = await playlistEntries(id);
+    if (expected && (expected.length !== rows.length || expected.some((r, i) => r.setVideoId !== rows[i].setVideoId))) {
+      throw new Error(t("Reload the playlist before editing it"));
+    }
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < 0 || from >= rows.length || to >= rows.length) throw new Error(t("Reload the playlist before editing it"));
+    if (from === to) return;
+    const moved = [...rows];
+    const [entry] = moved.splice(from, 1);
+    moved.splice(to, 0, entry);
+    const successor = moved[to + 1];
+    if (!entry.setVideoId || successor && !successor.setVideoId) throw new Error(t("Reload the playlist before editing it"));
+    await mutate("browse/edit_playlist", { playlistId: plainPlaylistId(id), actions: [{ action: "ACTION_MOVE_VIDEO_BEFORE", setVideoId: entry.setVideoId, movedSetVideoIdSuccessor: successor?.setVideoId || null }] });
+    playlistRows.set(plainPlaylistId(id), moved);
+  });
+}
+
+async function playlistEntries(id) {
+  const rows = await playlistTracks(await browseId(`VL${plainPlaylistId(id)}`));
+  return rows.map((r) => ({ id: r.id, setVideoId: r.playlistItemId }));
+}
+
+async function playlistTracks(answer) {
+  const tracks = [];
+  const seen = new Set();
+  for (let page = 0; ; page++) {
+    const { items, token } = rowsOf(answer);
+    tracks.push(...ofKind(items, "track"));
+    if (!token) break;
+    if (seen.has(token) || page >= pagesAtMost) throw new Error(t("The playlist is too large to edit safely"));
+    seen.add(token);
+    answer = await call("browse", { continuation: token });
+  }
+  return tracks;
 }

@@ -1,8 +1,8 @@
 {
   "id": "youtube-music",
   "name": "YouTube Music",
-  "version": "0.1.1",
-  "minAppVersion": "0.1.8",
+  "version": "0.2.0",
+  "minAppVersion": "0.1.23",
   "main": "index.js",
   "playback": "stream",
   "permissions": {
@@ -35,10 +35,23 @@
       "icon": "star"
     },
     {
+      "title": "Moods & Genres",
+      "page": "moods",
+      "icon": "radio"
+    },
+    {
       "builtin": "stations"
     },
     {
       "builtin": "liked"
+    },
+    {
+      "builtin": "savedAlbums"
+    },
+    {
+      "title": "Following",
+      "page": "artists",
+      "icon": "artist"
     }
   ]
 }

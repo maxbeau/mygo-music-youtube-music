@@ -12,5 +12,21 @@
   "YouTube asks you to sign in to play this": "YouTube 要求登录后才能播放",
   "YouTube Music plays through ffmpeg: install it with Homebrew, or so that it's on the PATH": "YouTube Music 需要 ffmpeg 才能播放：请用 Homebrew 安装，或安装到 PATH 中",
   "the audio didn't start in time": "音频没有及时开始播放",
-  "no such page": "没有这个页面"
+  "no such page": "没有这个页面",
+  "Moods & Genres": "心情与流派",
+  "Following": "已关注歌手",
+  "More": "更多",
+  "Related Music": "相似推荐",
+  "Song Radio": "歌曲电台",
+  "Artist Radio": "歌手电台",
+  "No radio is available": "暂时没有可用的电台",
+  "YouTube gave no radio queue": "YouTube 没有返回电台队列",
+  "YouTube refused the change": "YouTube 拒绝了这次修改",
+  "YouTube gave no artist channel": "YouTube 没有给出歌手频道",
+  "YouTube gave no album playlist": "YouTube 没有给出专辑播放列表",
+  "YouTube gave no playlist ID": "YouTube 没有返回歌单 ID",
+  "Reload the playlist before editing it": "歌单已变化，请重新加载后再编辑",
+  "The playlist is too large to edit safely": "歌单过大，无法完整读取后进行编辑",
+  "Radio": "电台",
+  "Songs like the one you played last.": "根据你上一首播放的歌曲推荐。"
 }
