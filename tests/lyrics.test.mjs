@@ -11,7 +11,10 @@ const next = { tabs:[{tabRenderer:{endpoint:{browseEndpoint:{browseId:'MPLYlyric
 
 async function plugin(answer, options={}) {
   const requests=[];
-  const context=vm.createContext({host:{t:x=>x,language:()=> 'en',storage:{get:k=>k==='cookie'?options.cookie:undefined,set:()=>{},remove:()=>{}}},
+  const storage=new Map(options.cookie?[["cookie",options.cookie]]:[]);
+  const secure=new Map();
+  const secrets={get:k=>secure.get(k),set:(k,v)=>{if(options.locked)throw new Error("locked");secure.set(k,v)},remove:k=>secure.delete(k)};
+  const context=vm.createContext({host:{proxy:()=>"",secrets,t:x=>x,language:()=> 'en',storage:{get:k=>storage.get(k),set:(k,v)=>storage.set(k,v),remove:k=>storage.delete(k)}},
     URL, URLSearchParams, TextEncoder, TextDecoder, AbortController, Uint8Array,
     setTimeout:options.setTimeout||setTimeout, clearTimeout, console,
     fetch:async(url,opts={})=>{
@@ -22,7 +25,7 @@ async function plugin(answer, options={}) {
       return {ok:status>=200&&status<300,status,headers:{get:k=>result?.headers?.[k]},json:async()=>result?.data??result};
     }});
   const mod=new vm.SourceTextModule(code,{context});await mod.link(()=>{});await mod.evaluate();
-  return {api:mod.namespace,requests};
+  return {api:mod.namespace,requests,storage,secure};
 }
 
 // A timed fallback works even when YouTube's next endpoint fails, using host-supplied metadata.
@@ -217,4 +220,40 @@ test('declared lyric filters dispatch only to their provider',async()=>{
   assert.ok(p.requests.length>0,`${source.id} was advertised but never queried`);
   assert.ok(p.requests.every(r=>r.url.hostname===expected),`${source.id} queried another provider`);
  }
+});
+
+// Migration clears the old plaintext only after a durable secure write, and sign-out clears both.
+test('login migrates securely and signout forgets the session',async()=>{
+ const p=await plugin(()=>({}),{cookie:'SAPISID=migration-only'});
+ await p.api.account();
+ assert.equal(p.storage.has('cookie'),false);
+ assert.equal(p.secure.get('cookie'),'SAPISID=migration-only');
+ p.api.signOut();
+ assert.equal(p.secure.has('cookie'),false);
+ assert.equal(await p.api.account(),null);
+ const locked=await plugin(()=>({}),{cookie:'SAPISID=keep-only',locked:true});
+ await assert.rejects(locked.api.account(),/locked/);
+ assert.equal(locked.storage.has('cookie'),true);
+ assert.equal(locked.requests.length,0);
+});
+
+// Rate limiting preserves authentication and carries the server cooldown.
+test('transient failures keep login intact',async()=>{
+ const p=await plugin(()=>({status:429,headers:{'retry-after':'37'}}),{cookie:'SAPISID=rate-only'});
+ await assert.rejects(p.api.account(),e=>e.code==='rateLimited'&&e.retryAfter===37000);
+ assert.equal(p.secure.has('cookie'),true);
+});
+
+// Provider translations require the same recording and never receive the YouTube session.
+test('source translations match title artist duration and language',async()=>{
+ const p=await plugin(u=>u.pathname.includes('cloudsearch')?{result:{songs:[{id:1,name:'Song',ar:[{name:'Other'}],dt:180000},{id:2,name:'Song',ar:[{name:'Singer'}],dt:180000}]}}:{code:200,lrc:{lyric:lrc},tlyric:{lyric:'[00:01.00]translated'}},{cookie:'SAPISID=source-only'});
+ assert.equal((await p.api.lyricsTranslation({track:song,language:'en'})).lines.length,0);
+ assert.equal(p.requests.length,0);
+ const result=await p.api.lyricsTranslation({track:song,language:'zh-CN'});
+ assert.equal(result.provider,'NetEase');
+ assert.equal(p.requests[1].url.searchParams.get('id'),'2');
+ for(const r of p.requests){assert.equal(r.opts.headers.cookie,undefined);assert.equal(r.opts.headers.authorization,undefined)}
+ const wrong=await plugin(()=>({result:{songs:[{id:3,name:'Song (Live)',ar:[{name:'Singer'}],dt:180000},{id:4,name:'Song',ar:[{name:'Singer'}],dt:200000}]}}));
+ assert.equal((await wrong.api.lyricsTranslation({track:song})).lines.length,0);
+ assert.equal(wrong.requests.length,1);
 });

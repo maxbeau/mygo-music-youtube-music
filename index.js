@@ -19,8 +19,18 @@ function fail(code, message) {
   return e;
 }
 
-// The session's cookies, as a Cookie header, kept in the plugin's storage.
-const cookie = () => host.storage.get("cookie") || "";
+// Migrate a previous plain-text session only after encrypted storage succeeds.
+let sessionCookie;
+function cookie() {
+  if (sessionCookie !== undefined) return sessionCookie;
+  const saved = host.secrets.get("cookie");
+  const legacy = host.storage.get("cookie");
+  if (legacy) {
+    host.secrets.set("cookie", saved || legacy);
+    host.storage.remove("cookie");
+  }
+  return sessionCookie = saved || legacy || "";
+}
 
 function cookieValue(name) {
   for (const part of cookie().split(";")) {
@@ -123,7 +133,9 @@ const visionOS = (visitor) => ({
 // call asks the service as the website, or as another of its apps. An
 // anonymous call leaves the session out.
 async function call(endpoint, body, as = remix, signal) {
-  const res = await fetch(`${site}/youtubei/v1/${endpoint}?prettyPrint=false`, {
+  let res;
+  try {
+    res = await fetch(`${site}/youtubei/v1/${endpoint}?prettyPrint=false`, {
     method: "POST",
     signal,
     headers: {
@@ -136,11 +148,25 @@ async function call(endpoint, body, as = remix, signal) {
     },
     body: JSON.stringify({ context: { client: as.client }, ...body }),
   });
-  if (res.status === 401) {
+  } catch (e) {
+    if (signal?.aborted) throw e;
+    throw fail("network", t("Network unavailable: retrying playback"));
+  }
+  if (res.status === 401 && !as.anonymous) {
     endSession();
     throw fail("signIn", t("Your YouTube Music session has ended: sign in again"));
   }
-  if (!res.ok) { const error = new Error(`${endpoint}: ${res.status}`); error.status = res.status; throw error; }
+  if (!res.ok) {
+    if ([429, 502, 503, 504].includes(res.status)) {
+      const error = fail(res.status === 429 ? "rateLimited" : "network", t("YouTube is temporarily unavailable"));
+      const wait = res.headers?.get("retry-after");
+      error.retryAfter = Math.min(900000, Math.max(0, (Number(wait) || 0) * 1000 || (Date.parse(wait) - Date.now()) || 0));
+      throw error;
+    }
+    const error = new Error(`${endpoint}: ${res.status}`);
+    error.status = res.status;
+    throw error;
+  }
   return res.json();
 }
 
@@ -445,7 +471,8 @@ export async function signIn() {
     userAgent: browserUA,
   });
   endSession();
-  host.storage.set("cookie", session);
+  host.secrets.set("cookie", session);
+  sessionCookie = session;
   likedSet = null;
   const me = await account();
   if (!me) {
@@ -461,6 +488,8 @@ export function signOut() {
 
 // What's kept of a session goes with it.
 function endSession() {
+  host.secrets.remove("cookie");
+  sessionCookie = "";
   host.storage.remove("cookie");
   likedSet = null;
   tokens.clear();
@@ -836,7 +865,7 @@ export async function stationNext({ id = "radio" } = {}) {
 // display; plain lyrics and explicitly instrumental records keep their meaning.
 const lyricCache = new Map();
 const lyricCooldown = new Map();
-const lyricUA = "MyGo Music/0.1.28 (https://github.com/maxbeau/mygo-music)";
+const lyricUA = "MyGo Music/0.1.31 (https://github.com/maxbeau/mygo-music)";
 const hasTimedLyrics = (l) => Boolean(l?.lines?.length || /\[\d+:\d+(?:[.:]\d+)?\]/.test(l?.lrc || ""));
 const hasLyrics = (l) => hasTimedLyrics(l) || Boolean(l?.text?.trim() || l?.instrumental);
 
@@ -854,7 +883,7 @@ async function lyricJSON(url) {
   const host = new URL(url).hostname;
   if ((lyricCooldown.get(host) || 0) > Date.now()) throw new Error("Lyrics provider temporarily unavailable");
   return lyricDeadline(async(signal) => {
-    const res = await fetch(url, { signal, headers: { "user-agent": lyricUA } });
+    const res = await fetch(url, { signal, headers: { "user-agent": lyricUA, ...(host === "music.163.com" ? { referer: "https://music.163.com/" } : {}) } });
     if (res.status === 404) return null;
     // Availability varies by recording; never send the YouTube session here.
     if (res.status === 401 && host === "api.betterlyrics.org") {
@@ -867,7 +896,12 @@ async function lyricJSON(url) {
       lyricCooldown.set(host, Date.now() + Math.max(1000, delay));
     }
     if (!res.ok) throw new Error(`Lyrics provider: ${res.status}`);
-    return res.json();
+    const data = await res.json();
+    if (host === "music.163.com" && [405, 406].includes(data?.code)) {
+      lyricCooldown.set(host, Date.now() + 60000);
+      throw new Error("Lyrics provider temporarily unavailable");
+    }
+    return data;
   }, 3000);
 }
 
@@ -1149,7 +1183,7 @@ async function locate(id) {
     found = await direct(id);
   } catch (e) {
     // What YouTube won't play, yt-dlp can't either.
-    if (e.code === "unavailable") throw e;
+    if (["unavailable", "network", "rateLimited"].includes(e.code)) throw e;
     console.warn(`finding ${id}'s audio: ${e.message}`);
     visitor = "";
     found = await throughYtdlp(id, e);
@@ -1214,6 +1248,7 @@ async function throughYtdlp(id, why) {
   const ytdlp = await program("yt-dlp", "--version");
   if (!ytdlp) throw why;
   const args = [
+    "--proxy", host.proxy("https://www.youtube.com"),
     "--config-locations", "-",
     "--no-warnings", "--no-playlist", "--no-progress",
     ...whatYtdlpAsks(),
@@ -1258,6 +1293,12 @@ function whatYtdlpAsks() {
 function ytdlpFailure(output) {
   const said = output.split("\n").reverse().find((l) => l.startsWith("ERROR:")) || output.trim() || "yt-dlp stopped";
   const why = said.replace(/^ERROR:\s*(\[[^\]]*\]\s*)?(\S+:\s*)?/, "");
+  if (/429|too many requests/i.test(why)) {
+    const error = fail("rateLimited", t("YouTube is temporarily unavailable"));
+    error.retryAfter = 30000;
+    return error;
+  }
+  if (/timed? out|connection|network|resolve|502|503|504/i.test(why)) return fail("network", t("Network unavailable: retrying playback"));
   if (/not a bot|sign in|cookies/i.test(why)) {
     return fail("signIn", cookie() ? t("YouTube turned down your session: sign in again") : t("YouTube asks you to sign in to play this"));
   }
@@ -1303,6 +1344,7 @@ async function serve(source, bitRate) {
     "-nostdin", "-hide_banner", "-nostats",
     "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
     "-rw_timeout", "15000000",
+    ...(host.proxy(source.url, "http") ? ["-http_proxy", host.proxy(source.url, "http")] : []),
     ...(pieces ? ["-request_size", String(10 << 20)] : []),
     ...(headers["User-Agent"] ? ["-user_agent", headers["User-Agent"]] : []),
     "-i", source.url,
@@ -1341,6 +1383,7 @@ export async function stream({ id, quality }) {
   try {
     url = await serve(source, kbps);
   } catch (e) {
+    if (e.code === "rateLimited" || e.code === "network") throw e;
     // An address may stop working before it said it would, and YouTube now and
     // then turns down one it just gave out: yt-dlp may find one that works.
     located.delete(id);
@@ -1491,4 +1534,50 @@ async function playlistTracks(answer) {
     answer = await call("browse", { continuation: token });
   }
   return tracks;
+}
+
+// A provider's existing Chinese translation is fetched independently of the first lyric display.
+export async function lyricsTranslation({ track, language = "zh-CN" }) {
+  if (!/^zh(?:-|$)/i.test(language)) return { lines: [] };
+  if (!track?.name || !track.artists?.length || !track.duration) return { lines: [] };
+  const params = new URLSearchParams({ s: `${lyricTitle(track.name)} ${track.artists[0].name}`, type: "1", limit: "10" });
+  const found = await lyricJSON(`https://music.163.com/api/cloudsearch/pc?${params}`);
+  const match = (found?.result?.songs || [])
+    .filter(song => matchesLyricTrack(track, song.name, (song.ar || song.artists || []).map(a => a.name).join(", "), (song.dt || song.duration) / 1000, 2))
+    .sort((a, b) => Math.abs((a.dt || a.duration) - track.duration) - Math.abs((b.dt || b.duration) - track.duration))[0];
+  if (!match) return { lines: [] };
+  const data = await lyricJSON(`https://music.163.com/api/song/lyric?id=${encodeURIComponent(match.id)}&lv=1&tv=-1`);
+  if (data?.code !== 200 || data.pureMusic || !hasTimedLyrics({ lrc: data.lrc?.lyric }) || !hasTimedLyrics({ lrc: data.tlyric?.lyric })) return { lines: [] };
+  return { lrc: data.lrc.lyric, translation: data.tlyric.lyric, provider: "NetEase" };
+}
+
+// Checks report versions and states, never session values or signed media URLs.
+export async function diagnostics() {
+  const checks = [];
+  try {
+    const res = await lyricDeadline(signal => fetch(site, { signal, method: "HEAD" }), 6000);
+    checks.push({ name: "YouTube Connection", value: `HTTP ${res.status}`, ok: res.ok });
+  } catch {
+    checks.push({ name: "YouTube Connection", value: "Connection failed", ok: false });
+  }
+  try {
+    checks.push({ name: "Saved Login", value: cookie() ? "Saved securely" : "Not signed in", ok: true });
+  } catch {
+    checks.push({ name: "Saved Login", value: "Credential store unavailable", ok: false });
+  }
+  for (const [name, flag] of [["ffmpeg", "-version"], ["yt-dlp", "--version"]]) {
+    try {
+      const path = await program(name, flag);
+      if (!path) { checks.push({ name, value: "Not installed", ok: false }); continue; }
+      const proc = host.spawn(path, [flag]);
+      proc.closeStdin();
+      let version = "";
+      for (let line; (line = await proc.readLine()) !== null;) { if (!version) version = line; }
+      const code = await proc.wait();
+      checks.push({ name, value: version.slice(0, 160), ok: code === 0 });
+    } catch {
+      checks.push({ name, value: "Check program permissions", ok: false });
+    }
+  }
+  return checks;
 }

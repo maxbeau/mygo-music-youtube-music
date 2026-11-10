@@ -4,7 +4,7 @@ Plays YouTube Music in [MyGo Music](https://github.com/maxbeau/mygo-music). It i
 
 ## Recommended MyGo version
 
-For the best compatibility, use [maxbeau's MyGo Music](https://github.com/maxbeau/mygo-music) **0.1.30 or later** with this plugin. This companion fork includes the host support for song-radio queue handling, the discovery homepage and sidebar, and lyrics tools such as source selection, translation, romanization, timing adjustment, editing and offline storage. Other MyGo builds need equivalent host support to provide these features.
+For the best compatibility, use [maxbeau's MyGo Music](https://github.com/maxbeau/mygo-music) **0.1.31 or later** with this plugin. This companion fork includes the host support for song-radio queue handling, the discovery homepage and sidebar, and lyrics tools such as source selection, translation, romanization, timing adjustment, editing and offline storage. Other MyGo builds need equivalent host support to provide these features.
 
 推荐搭配 [maxbeau 维护的 MyGo Music](https://github.com/maxbeau/mygo-music) **0.1.30 及以上版本**，以完整使用上述电台、发现页面和歌词扩展功能。
 
@@ -28,11 +28,11 @@ Or paste the GitHub URL in Settings > Plugins:
 
 In Settings > Plugins, allow YouTube Music to start programs. To get your library, click **Sign In** and sign in to Google in the window that opens.
 
-This version needs MyGo Music 0.1.30 or later, and only starts ffmpeg and yt-dlp: from the PATH, `/opt/homebrew/bin` or `/usr/local/bin`. If they're somewhere else, link them into one of those.
+This version needs MyGo Music 0.1.31 or later, and only starts ffmpeg and yt-dlp: from the PATH, `/opt/homebrew/bin` or `/usr/local/bin`. If they're somewhere else, link them into one of those.
 
 ## Signing in
 
-You sign in on Google's page, in a window of the app. The session is kept unencrypted in the plugin's data on this machine, and is sent to music.youtube.com, s.youtube.com for your history, and to yt-dlp when it fetches audio. Signing out forgets it. To end the session on Google's side, remove the device in your Google account's security settings.
+You sign in on Google's page, in a window of the app. The session is encrypted with AES-GCM in the plugin's data on this machine, with its per-plugin encryption key kept in the system credential store. Existing plaintext sessions migrate automatically after a successful secure write. It is sent to music.youtube.com, s.youtube.com for your history, and to yt-dlp when it fetches audio. Signing out forgets it. To end the session on Google's side, remove the device in your Google account's security settings.
 
 ## What works
 
@@ -113,3 +113,23 @@ picks, Surprise Me radio, mixes and related recommendations from the current
 song. Each service shelf previews one row with See All for its full contents.
 Mixed cards retain YouTube's original order. Song cards carrying a radio
 playlist parameter stay playable songs rather than becoming station cards.
+
+## Network and translations (plugin 0.6.0)
+
+Use [maxbeau's MyGo fork](https://github.com/maxbeau/mygo-music) **0.1.31+**
+for these additions. Settings > Network & Diagnostics controls the shared
+HTTP/helper proxy and checks YouTube reachability, secure login, ffmpeg and
+yt-dlp. Transient failures and rate limits keep the current audio position and
+queue; server cooldowns are honored. Exported reports redact credentials and
+signed URL query parameters.
+
+Chinese lyric translations can be fetched from NetEase's public lyric endpoint
+when title, artist, recording version and duration match. Only song metadata is
+sent to `music.163.com`; YouTube credentials are excluded. The host verifies
+original text and timing before merging. Missing or mismatched translations
+leave the original unchanged and may fall back to the configured translation API.
+
+Source-specific APIs and matching remain in this plugin;
+proxy policy, encryption, playback recovery, login windows and generic lyric tools
+belong to the host. On macOS 14+, new login windows follow the app's
+explicit proxy policy; other platforms use the system WebView proxy.

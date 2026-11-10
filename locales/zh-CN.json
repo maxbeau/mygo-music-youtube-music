@@ -30,5 +30,7 @@
   "Radio": "电台",
   "Songs like the one you played last.": "根据你上一首播放的歌曲推荐。",
   "Artists": "歌手",
-  "KuGou": "酷狗"
+  "KuGou": "酷狗",
+  "Network unavailable: retrying playback": "网络不可用，正在重试播放",
+  "YouTube is temporarily unavailable": "YouTube 暂时不可用"
 }

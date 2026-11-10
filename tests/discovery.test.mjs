@@ -7,7 +7,7 @@ const plain = x => JSON.parse(JSON.stringify(x));
 async function plugin(answer, storage = new Map()) {
   const requests = [];
   const context = vm.createContext({
-    host: { t: x => x, language: () => 'en', storage: { get: k => structuredClone(storage.get(k)), set: (k, v) => storage.set(k, structuredClone(v)), remove: k => storage.delete(k) } },
+    host: { secrets: {get:k=>storage.get("secret:"+k),set:(k,v)=>storage.set("secret:"+k,v),remove:k=>storage.delete("secret:"+k)}, proxy:()=>"", t: x => x, language: () => 'en', storage: { get: k => structuredClone(storage.get(k)), set: (k, v) => storage.set(k, structuredClone(v)), remove: k => storage.delete(k) } },
     URL, URLSearchParams, TextEncoder, setTimeout, clearTimeout, console,
     fetch: async (url, options) => {
       const endpoint = url.split('/youtubei/v1/')[1]?.split('?')[0];
@@ -79,7 +79,7 @@ test('radio retries transient failures without consuming continuation', async ()
   const st = await p.api.radio({ kind: 'track', id: 'seed' });
   await p.api.stationNext({ id: st.id });
   fail = true;
-  await assert.rejects(p.api.stationNext({ id: st.id }), /offline/);
+  await assert.rejects(p.api.stationNext({ id: st.id }), e=>e.code==='network');
   fail = false;
   await p.api.stationNext({ id: st.id });
   assert.equal(p.requests.at(-1).body.continuation, 'next');
